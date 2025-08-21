@@ -31,14 +31,13 @@ if st.button("Predict Premium Category"):
 
     try:
         response = requests.post(API_URL, json=input_data)
-        result = response.json()
-
         if response.status_code == 200 and "response" in result:
+            result = response.json()
             prediction = result["response"]
             st.success(f"Predicted Insurance Premium Category: **{prediction}**")
 
         else:
-            st.error(f"API Error: {response.status_code}")
+            st.error(f"API Error: {response.status_code} - {response.text}")
             st.write(result)
 
     except requests.exceptions.ConnectionError:
