@@ -1,20 +1,35 @@
-from fastapi import FastAPI, Path, HTTPException, Query
+from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, computed_field
 from typing import Annotated, Literal, Optional
-import json
+import pickle
+import pandas as pd
+
+with open('model.pkl','rb') as f:
+    model=pickle.load(f)
+
 
 app = FastAPI()
 
-class Patient(BaseModel):
+tier_1_cities = ["Mumbai", "Delhi", "Bangalore", "Chennai", "Kolkata", "Hyderabad", "Pune"]
+tier_2_cities = [
+    "Jaipur", "Chandigarh", "Indore", "Lucknow", "Patna", "Ranchi", "Visakhapatnam", "Coimbatore",
+    "Bhopal", "Nagpur", "Vadodara", "Surat", "Rajkot", "Jodhpur", "Raipur", "Amritsar", "Varanasi",
+    "Agra", "Dehradun", "Mysore", "Jabalpur", "Guwahati", "Thiruvananthapuram", "Ludhiana", "Nashik",
+    "Allahabad", "Udaipur", "Aurangabad", "Hubli", "Belgaum", "Salem", "Vijayawada", "Tiruchirappalli",
+    "Bhavnagar", "Gwalior", "Dhanbad", "Bareilly", "Aligarh", "Gaya", "Kozhikode", "Warangal",
+    "Kolhapur", "Bilaspur", "Jalandhar", "Noida", "Guntur", "Asansol", "Siliguri"
+]
 
-    id: Annotated[str, Field(..., description='ID of the patient', examples=['P001'])]
-    name: Annotated[str, Field(..., description='Name of the patient')]
-    city: Annotated[str, Field(..., description='City where the patient is living')]
+class UserInput(BaseModel):
     age: Annotated[int, Field(..., gt=0, lt=120, description='Age of the patient')]
-    gender: Annotated[Literal['male', 'female', 'others'], Field(..., description='Gender of the patient')]
-    height: Annotated[float, Field(..., gt=0, description='Height of the patient in mtrs')]
     weight: Annotated[float, Field(..., gt=0, description='Weight of the patient in kgs')]
+    height: Annotated[float, Field(..., gt=0, description='Height of the patient in mtrs')]
+    income_lpa:Annotated[float,Field(...,gt=0,description='Annual Salary of the user in LPA')]
+    smoker:Annotated[bool,Field(...,description='Is user a smoker')]
+    city: Annotated[str, Field(..., description='City where the user is living')]
+    occupation:Annotated[Literal['retired','freelancer','student','government_job','business_owner','unemployed','private_job'],Field(...,description='Occupation of the user')]
+   
 
     @computed_field
     @property
@@ -24,138 +39,47 @@ class Patient(BaseModel):
     
     @computed_field
     @property
-    def verdict(self) -> str:
-
-        if self.bmi < 18.5:
-            return 'Underweight'
-        elif self.bmi < 25:
-            return 'Normal'
-        elif self.bmi < 30:
-            return 'Normal'
+    def lifestyle_risk(self) -> str:
+        if self.smoker and self.bmi > 30:
+            return "high"
+        elif self.smoker or self.bmi > 27:
+            return "medium"
         else:
-            return 'Obese'
+            return "low"
         
-class PatientUpdate(BaseModel):
-    name: Annotated[Optional[str], Field(default=None)]
-    city: Annotated[Optional[str], Field(default=None)]
-    age: Annotated[Optional[int], Field(default=None, gt=0)]
-    gender: Annotated[Optional[Literal['male', 'female']], Field(default=None)]
-    height: Annotated[Optional[float], Field(default=None, gt=0)]
-    weight: Annotated[Optional[float], Field(default=None, gt=0)]
+    @computed_field
+    @property
+    def age_group(self)->str:
+        if self.age < 25:
+            return "young"
+        elif self.age < 45:
+            return "adult"
+        elif self.age < 60:
+            return "middle_aged"
+        return "senior"
+    
+    @computed_field
+    @property
+    def city_tier(self)->int:
+        if self.city in tier_1_cities:
+              return 1
+        elif self.city in tier_2_cities:
+            return 2
+        else:
+            return 3
 
-
-def load_data():
-    with open('patients.json', 'r') as f:
-        data = json.load(f)
-
-    return data
-
-def save_data(data):
-    with open('patients.json', 'w') as f:
-        json.dump(data, f)
         
+@app.post('/predict')
+def predict_premium(data:UserInput):
+    input_df=pd.DataFrame([{
+        'bmi':data.bmi,
+        'age_group':data.age_group,
+        'lifestyle_risk':data.lifestyle_risk,
+        'city_tier':data.city_tier,
+        'income_lpa':data.income_lpa,
+        'occupation':data.occupation
+    }])
 
-@app.get("/")
-def hello():
-    return {'message':'Patient Management System API'}
+    prediction=model.predict(input_df)[0]
 
-@app.get('/about')
-def about():
-    return {'message': 'A fully functional API to manage your patient records'}
-
-@app.get('/view')
-def view():
-    data = load_data()
-
-    return data
-
-@app.get('/patient/{patient_id}')
-def view_patient(patient_id: str = Path(..., description='ID of the patient in the DB', example='P001')):
-    # load all the patients
-    data = load_data()
-
-    if patient_id in data:
-        return data[patient_id]
-    raise HTTPException(status_code=404, detail='Patient not found')
-
-@app.get('/sort')
-def sort_patients(sort_by: str = Query(..., description='Sort on the basis of height, weight or bmi'), order: str = Query('asc', description='sort in asc or desc order')):
-
-    valid_fields = ['height', 'weight', 'bmi']
-
-    if sort_by not in valid_fields:
-        raise HTTPException(status_code=400, detail=f'Invalid field select from {valid_fields}')
-    
-    if order not in ['asc', 'desc']:
-        raise HTTPException(status_code=400, detail='Invalid order select between asc and desc')
-    
-    data = load_data()
-
-    sort_order = True if order=='desc' else False
-
-    sorted_data = sorted(data.values(), key=lambda x: x.get(sort_by, 0), reverse=sort_order)
-
-    return sorted_data
-
-@app.post('/create')
-def create_patient(patient: Patient):
-
-    # load existing data
-    data = load_data()
-
-    # check if the patient already exists
-    if patient.id in data:
-        raise HTTPException(status_code=400, detail='Patient already exists')
-
-    # new patient add to the database
-    data[patient.id] = patient.model_dump(exclude=['id'])
-
-    # save into the json file
-    save_data(data)
-
-    return JSONResponse(status_code=201, content={'message':'patient created successfully'})
-
-
-@app.put('/edit/{patient_id}')
-def update_patient(patient_id: str, patient_update: PatientUpdate):
-
-    data = load_data()
-
-    if patient_id not in data:
-        raise HTTPException(status_code=404, detail='Patient not found')
-    
-    existing_patient_info = data[patient_id]
-
-    updated_patient_info = patient_update.model_dump(exclude_unset=True)
-
-    for key, value in updated_patient_info.items():
-        existing_patient_info[key] = value
-
-    #existing_patient_info -> pydantic object -> updated bmi + verdict
-    existing_patient_info['id'] = patient_id
-    patient_pydandic_obj = Patient(**existing_patient_info)
-    #-> pydantic object -> dict
-    existing_patient_info = patient_pydandic_obj.model_dump(exclude='id')
-
-    # add this dict to data
-    data[patient_id] = existing_patient_info
-
-    # save data
-    save_data(data)
-
-    return JSONResponse(status_code=200, content={'message':'patient updated'})
-
-@app.delete('/delete/{patient_id}')
-def delete_patient(patient_id: str):
-
-    # load data
-    data = load_data()
-
-    if patient_id not in data:
-        raise HTTPException(status_code=404, detail='Patient not found')
-    
-    del data[patient_id]
-
-    save_data(data)
-
-    return JSONResponse(status_code=200, content={'message':'patient deleted'})
+    return JSONResponse(status_code=200,content={'prediction_category':prediction})
